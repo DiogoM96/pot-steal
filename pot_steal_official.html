@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pot Steal</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #111;
+            color: white;
+            text-align: center;
+            background-image: radial-gradient(circle, #333 10%, #111 90%);
+        }
+        #game {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #222;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        h1 {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .card {
+            display: inline-block;
+            width: 60px;
+            height: 90px;
+            margin: 5px;
+            border-radius: 8px;
+            font-size: 20px;
+            font-weight: bold;
+            line-height: 90px;
+            cursor: pointer;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            border: 2px solid rgba(255,255,255,0.1);
+            transition: transform 0.2s, border 0.2s;
+        }
+        .weak { background: #2ecc71; color: black; border-color: #27ae60; }
+        .mid { background: #e74c3c; color: white; border-color: #c0392b; }
+        .strong { background: #f1c40f; color: black; border-color: #f39c12; }
+        .special { background: #2c3e50; color: white; border-color: #34495e; }
+        .vault-card {
+            background: #34495e;
+            color: white;
+            border: 2px dashed #f1c40f;
+        }
+        .card-back {
+            background: #34495e;
+            color: white;
+            border: 2px dashed rgba(255,255,255,0.3);
+        }
+        #human-hand .card:hover {
+            transform: translateY(-10px);
+            border-color: rgba(255,255,255,0.5);
+        }
+        #ai-hand, #vault { margin: 20px 0; }
+        #log {
+            height: 100px;
+            overflow-y: auto;
+            margin: 10px 0;
+            padding: 10px;
+            background: #1a1a1a;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background: #3498db;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover { background: #2980b9; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        @keyframes celebrate {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+        .celebrate {
+            animation: celebrate 1s ease-in-out;
+            color: #f1c40f;
+            text-shadow: 0 0 10px gold;
+        }
+        #vault { display: none; }
+        .selected-to-discard {
+            border: 2px solid white !important;
+            transform: translateY(-10px);
+        }
+        .selectable {
+            border: 2px solid #f1c40f !important;
+            box-shadow: 0 0 10px gold;
+        }
+        .selected-card {
+            border: 2px solid white !important;
+            transform: translateY(-10px);
+        }
+    </style>
+</head>
+<body>
+    <div id="game">
+        <h1>🎴 <span id="title">POT STEAL</span> <img src="https://cdn-icons-png.flaticon.com/512/2489/2489078.png" width="30" height="30"></h1>
+        <p><em>Eat or be eaten. Steal or be stolen!</em></p>
+
+        <div id="log"></div>
+
+        <h3>Your Chips: <span id="human-chips">14</span> | AI Chips: <span id="ai-chips">14</span></h3>
+
+        <div id="ai-hand"><h3>AI's Hand:</h3></div>
+        <div id="vault"><h3>Mystery Vault:</h3></div>
+        <div id="human-hand"><h3>Your Hand:</h3></div>
+
+        <button id="play-btn" disabled>Play Card</button>
+        <button id="block-btn" disabled>Block (2 Chips)</button>
+        <button id="vault-btn" disabled>Mystery Vault (2 Cards)</button>
+        <button id="confirm-discard-btn" style="display:none;">Confirm Discard</button>
+        <button id="new-game-btn">New Game</button>
+    </div>
+
+    <audio id="steal-sound" src="https://assets.mixkit.co/sfx/preview/mixkit-winning-coin-tune-2015.mp3" preload="auto"></audio>
+    <audio id="win-sound" src="https://assets.mixkit.co/sfx/preview/mixkit-achievement-bell-600.mp3" preload="auto"></audio>
+    <audio id="lose-sound" src="https://assets.mixkit.co/sfx/preview/mixkit-retro-arcade-lose-2027.mp3" preload="auto"></audio>
+    <audio id="vault-sound" src="https://assets.mixkit.co/sfx/preview/mixkit-magic-potion-music-and-fx-283.mp3" preload="auto"></audio>
+    <audio id="champion-sound" src="https://assets.mixkit.co/sfx/preview/mixkit-epic-win-2019.mp3" preload="auto"></audio>
+
+    <script>
+        // GAME SETUP
+        const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "Mafioso", "Queen", "King", "Ace"];
+        const specials = {
+            "Black Joker": { effect: "steal_2_cards", class: "special", strength: 13, beatsAllExcept: ["King", "Ace"] },
+            "Joker": { effect: "steal_1_card", class: "special", strength: 12, beatsAllExcept: ["King", "Ace"] },
+            "Hand Swap": { effect: "swap_hands", class: "special", strength: -1 },
+            "-1 (card)": { effect: "discard_opponent_card", class: "special", strength: -1 },
+            "-1 (chip)": { effect: "lose_1_chip", class: "special", strength: -1 },
+            "Ricochet": { effect: "reflect_special", class: "special", strength: -1 }
+        };
+
+        // DECK COMPOSITION (51 cards)
+        const deckComposition = [
+            ...Array(3).fill("2"), ...Array(3).fill("3"), ...Array(3).fill("4"),
+            ...Array(3).fill("5"), ...Array(3).fill("6"), ...Array(3).fill("7"),
+            ...Array(3).fill("8"), ...Array(3).fill("9"), ...Array(3).fill("10"),
+            ...Array(3).fill("Mafioso"), ...Array(3).fill("Queen"), ...Array(3).fill("King"),
+            ...Array(3).fill("Ace"), ...Array(2).fill("-1 (chip)"), ...Array(2).fill("-1 (card)"),
+            ...Array(2).fill("Ricochet"), ...Array(2).fill("Hand Swap"), ...Array(2).fill("Joker"),
+            ...Array(2).fill("Black Joker")
+        ];
+
+        // MYSTERY VAULT COMPOSITION (12 cards)
+        const vaultComposition = [
+            "7", "8", "9", "10", "Mafioso", "Queen", "King", 
+            "Hand Swap", "Ricochet", "Joker", "Black Joker"
+        ];
+
+        let human = { hand: [], chips: 14, blockUsed: false, vaultUsed: false };
+        let ai = { hand: [], chips: 14, blockUsed: false, vaultUsed: false };
+        let selectedCard = null;
+        let gameLog = [];
+        let stealMode = false;
+        let discardMode = false;
+        let vaultMode = false;
+        let cardsToDiscard = [];
+        let vaultCards = [];
+        let humanTurn = Math.random() < 0.5;
+        let currentRoundCards = { human: null, ai: null };
+        let gameActive = true;
+        let processingEffect = false;
+        let ricochetUsed = false;
+
+        // Initialize game
+        function init() {
+            // Reset game state
+            human = { hand: [], chips: 14, blockUsed: false, vaultUsed: false };
+            ai = { hand: [], chips: 14, blockUsed: false, vaultUsed: false };
+            selectedCard = null;
+            gameLog = [];
+            stealMode = false;
+            discardMode = false;
+            vaultMode = false;
+            cardsToDiscard = [];
+            humanTurn = Math.random() < 0.5;
+            currentRoundCards = { human: null, ai: null };
+            gameActive = true;
+            processingEffect = false;
+            ricochetUsed = false;
+
+            // Create full deck (51 cards)
+            let deck = deckComposition.map(cardName => {
+                if (specials[cardName]) {
+                    return {
+                        name: cardName,
+                        class: specials[cardName].class,
+                        effect: specials[cardName].effect,
+                        strength: specials[cardName].strength,
+                        beatsAllExcept: specials[cardName].beatsAllExcept,
+                        fromVault: false
+                    };
+                } else {
+                    let cardClass = "weak";
+                    if (["7", "8", "9", "10"].includes(cardName)) cardClass = "mid";
+                    if (["Mafioso", "Queen", "King", "Ace"].includes(cardName)) cardClass = "strong";
+                    return {
+                        name: cardName,
+                        class: cardClass,
+                        strength: ranks.indexOf(cardName) + 2,
+                        fromVault: false
+                    };
+                }
+            });
+
+            // Create Mystery Vault (12 cards)
+            vaultCards = vaultComposition.map(cardName => {
+                if (specials[cardName]) {
+                    return {
+                        name: cardName,
+                        class: specials[cardName].class,
+                        effect: specials[cardName].effect,
+                        strength: specials[cardName].strength,
+                        beatsAllExcept: specials[cardName].beatsAllExcept,
+                        fromVault: true
+                    };
+                } else {
+                    let cardClass = "mid";
+                    if (["Mafioso", "Queen", "King", "Ace"].includes(cardName)) cardClass = "strong";
+                    return {
+                        name: cardName,
+                        class: cardClass,
+                        strength: ranks.indexOf(cardName) + 2,
+                        fromVault: true
+                    };
+                }
+            });
+
+            // Shuffle and deal
+            deck = shuffle(deck);
+            human.hand = deck.slice(0, 7);
+            ai.hand = deck.slice(7, 14);
+            vaultCards = shuffle(vaultCards);
+
+            document.getElementById("log").innerHTML = "";
+            document.getElementById("title").classList.remove("celebrate");
+            document.getElementById("vault").style.display = "none";
+            document.getElementById("confirm-discard-btn").style.display = "none";
+            renderHands();
+            updateButtons();
+
+            addToLog(`Game started! ${humanTurn ? "You play first" : "AI plays first"}`);
+
+            if (!humanTurn) {
+                setTimeout(aiPlayFirst, 1500);
+            }
+        }
+
+        function aiPlayFirst() {
+            if (!gameActive || processingEffect) return;
+
+            // AI decision to block (10% chance if has chips)
+            if (!ai.blockUsed && ai.chips >= 2 && Math.random() < 0.1) {
+                aiBlock();
+                return;
+            }
+
+            // AI decision to use vault (15% chance if has cards)
+            if (!ai.vaultUsed && ai.hand.length >= 2 && Math.random() < 0.15) {
+                aiUseVault();
+                return;
+            }
+
+            if (!humanTurn && ai.hand.length > 0) {
+                addToLog("AI is playing first this round...");
+                const aiCard = aiPlayCard();
+                currentRoundCards.ai = aiCard;
+                addToLog(`AI played: <span class="${aiCard.class}">${aiCard.name}</span>`);
+                updateButtons();
+            }
+        }
+
+        function aiBlock() {
+            ai.chips -= 2;
+            ai.blockUsed = true;
+            addToLog("AI spent 2 chips to block your card!");
+            humanTurn = false; // AI goes first next round
+            updateButtons();
+            renderHands();
+        }
+
+        function aiUseVault() {
+            addToLog("AI is using the Mystery Vault...");
+            ai.vaultUsed = true;
+            
+            // AI discards 2 random cards
+            const discardIndices = [];
+            while (discardIndices.length < 2 && ai.hand.length > 0) {
+                const idx = Math.floor(Math.random() * ai.hand.length);
+                if (!discardIndices.includes(idx)) {
+                    discardIndices.push(idx);
+                }
+            }
+            
+            // Sort descending to avoid index issues
+            discardIndices.sort((a, b) => b - a);
+            const discarded = discardIndices.map(idx => ai.hand.splice(idx, 1)[0]);
+            
+            // Draw from vault
+            const vaultIndex = Math.floor(Math.random() * vaultCards.length);
+            const drawnCard = vaultCards.splice(vaultIndex, 1)[0];
+            ai.hand.push(drawnCard);
+            
+            addToLog(`AI drew: <span class="${drawnCard.class}">${drawnCard.name}</span> from the Vault`);
+            document.getElementById("vault-sound").play();
+            
+            renderHands();
+            updateButtons();
+            
+            // Continue with AI's turn
+            setTimeout(aiPlayFirst, 1000);
+        }
+
+        // Shuffle deck using Fisher-Yates
+        function shuffle(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        // Render hands
+        function renderHands() {
+            // Your hand
+            const humanHandDiv = document.getElementById("human-hand");
+            humanHandDiv.innerHTML = "<h3>Your Hand:</h3>";
+            human.hand.forEach((card, index) => {
+                const cardEl = document.createElement("div");
+                cardEl.className = `card ${card.class} ${selectedCard === index ? "selected-card" : ""} ${cardsToDiscard.includes(index) ? "selected-to-discard" : ""}`;
+                cardEl.textContent = card.name;
+
+                if (vaultMode) {
+                    cardEl.addEventListener("click", () => selectForDiscard(index));
+                } else if (!stealMode && !discardMode) {
+                    cardEl.addEventListener("click", () => selectCard(index));
+                }
+
+                humanHandDiv.appendChild(cardEl);
+            });
+
+            // AI's hand (card backs)
+            const aiHandDiv = document.getElementById("ai-hand");
+            aiHandDiv.innerHTML = "<h3>AI's Hand:</h3>";
+            ai.hand.forEach((card, index) => {
+                const cardEl = document.createElement("div");
+                cardEl.className = `card card-back`;
+                cardEl.textContent = "?";
+                aiHandDiv.appendChild(cardEl);
+            });
+
+            // Mystery Vault
+            const vaultDiv = document.getElementById("vault");
+            vaultDiv.innerHTML = "<h3>Mystery Vault:</h3>";
+            vaultCards.forEach((card, index) => {
+                const cardEl = document.createElement("div");
+                cardEl.className = "card vault-card";
+                cardEl.textContent = "MV";
+                if (vaultMode && cardsToDiscard.length === 2) {
+                    cardEl.addEventListener("click", () => drawFromVault(index));
+                }
+                vaultDiv.appendChild(cardEl);
+            });
+        }
+
+        // Select your card to play
+        function selectCard(index) {
+            if (!gameActive || processingEffect || stealMode || discardMode || vaultMode) return;
+
+            // Toggle selection
+            if (selectedCard === index) {
+                selectedCard = null;
+            } else {
+                selectedCard = index;
+            }
+
+            document.getElementById("play-btn").disabled = (selectedCard === null);
+            renderHands();
+            updateButtons();
+        }
+
+        // Select cards to discard for vault
+        function selectForDiscard(index) {
+            if (!vaultMode) return;
+
+            const idx = cardsToDiscard.indexOf(index);
+            if (idx === -1) {
+                if (cardsToDiscard.length < 2) {
+                    cardsToDiscard.push(index);
+                }
+            } else {
+                cardsToDiscard.splice(idx, 1);
+            }
+
+            renderHands();
+            document.getElementById("confirm-discard-btn").style.display =
+                (cardsToDiscard.length === 2) ? "inline-block" : "none";
+        }
+
+        function confirmDiscard() {
+            if (cardsToDiscard.length !== 2) return;
+
+            vaultMode = true;
+            document.getElementById("confirm-discard-btn").style.display = "none";
+            document.getElementById("vault").style.display = "block";
+            addToLog("Select a card from the Vault to draw");
+            renderHands();
+        }
+
+        // Play a turn - FIXED THIS FUNCTION
+        function playTurn() {
+            if (!gameActive || processingEffect || selectedCard === null || selectedCard >= human.hand.length) return;
+
+            const humanCard = human.hand[selectedCard];
+            currentRoundCards.human = humanCard;
+
+            // Remove the played card from hand immediately
+            human.hand.splice(selectedCard, 1);
+            selectedCard = null;
+
+            addToLog(`You played: <span class="${humanCard.class}">${humanCard.name}</span>`);
+
+            // If AI hasn't played yet this round (human going first)
+            if (currentRoundCards.ai === null) {
+                setTimeout(() => {
+                    const aiCard = aiPlayCard();
+                    currentRoundCards.ai = aiCard;
+                    addToLog(`AI played: <span class="${aiCard.class}">${aiCard.name}</span>`);
+                    resolveCombat();
+                }, 1000);
+            } else {
+                resolveCombat();
+            }
+
+            renderHands();
+            updateButtons();
+        }
+
+        function resolveCombat(specialCard = null) {
+            if (!gameActive || processingEffect) return;
+
+            const humanCard = currentRoundCards.human;
+            const aiCard = currentRoundCards.ai;
+            let humanWins = false;
+            let aiWins = false;
+            let tie = false;
+
+            // Handle special effects first (they always resolve)
+            if (humanCard && humanCard.effect && !specialCard) {
+                resolveSpecialEffect(humanCard, aiCard);
+                return; // Wait for effect to complete
+            }
+            if (aiCard && aiCard.effect && !specialCard) {
+                resolveSpecialEffect(aiCard, humanCard, true);
+                return; // Wait for effect to complete
+            }
+
+            // Resolve combat with special Joker rules
+            if (humanCard && aiCard) {
+                // Check if either card is a Joker that beats the other
+                const humanIsJoker = humanCard.beatsAllExcept && !humanCard.beatsAllExcept.includes(aiCard.name);
+                const aiIsJoker = aiCard.beatsAllExcept && !aiCard.beatsAllExcept.includes(humanCard.name);
+                
+                if (humanIsJoker && !aiIsJoker) {
+                    humanWins = true;
+                } else if (aiIsJoker && !humanIsJoker) {
+                    aiWins = true;
+                } else if (humanCard.strength === aiCard.strength) {
+                    tie = true;
+                } else if (humanCard.strength > aiCard.strength) {
+                    humanWins = true;
+                } else {
+                    aiWins = true;
+                }
+            }
+
+            // Handle combat results
+            if (humanWins) {
+                addToLog("You win! Take the AI's card + 1 chip.");
+                human.chips += 1;
+                ai.chips -= 1;
+                if (aiCard) {
+                    human.hand.push(aiCard);
+                }
+                if (humanCard) {
+                    human.hand.push(humanCard);
+                }
+                document.getElementById("win-sound").play();
+            } else if (aiWins) {
+                addToLog("AI wins! Takes your card + 1 chip.");
+                human.chips -= 1;
+                ai.chips += 1;
+                if (humanCard) {
+                    ai.hand.push(humanCard);
+                }
+                if (aiCard) {
+                    ai.hand.push(aiCard);
+                }
+                document.getElementById("lose-sound").play();
+            } else if (tie) {
+                addToLog("Tie! Both cards discarded.");
+            }
+
+            // Determine turn order based on combat result
+            if (humanWins) {
+                humanTurn = true;
+            } else if (aiWins) {
+                humanTurn = false;
+            }
+
+            // Reset round state
+            currentRoundCards = { human: null, ai: null };
+            updateButtons();
+            renderHands();
+            checkHandRefill();
+            checkGameOver();
+
+            // Discard special cards that were used
+            if (specialCard) {
+                if (human.hand.includes(specialCard)) {
+                    human.hand.splice(human.hand.indexOf(specialCard), 1);
+                } else if (ai.hand.includes(specialCard)) {
+                    ai.hand.splice(ai.hand.indexOf(specialCard), 1);
+                }
+            }
+
+            // If AI goes first next round, trigger its play
+            if (!humanTurn && ai.hand.length > 0 && gameActive && !processingEffect) {
+                setTimeout(aiPlayFirst, 1500);
+            }
+        }
+
+        // Resolve special card effects
+        function resolveSpecialEffect(card, opponentCard, isAI = false) {
+            processingEffect = true;
+            ricochetUsed = false;
+
+            switch (card.effect) {
+                case "steal_1_card":
+                    if (!isAI) {
+                        if (ai.hand.length > 0) {
+                            const stolenIndex = Math.floor(Math.random() * ai.hand.length);
+                            const stolenCard = ai.hand.splice(stolenIndex, 1)[0];
+                            human.hand.push(stolenCard);
+                            addToLog(`You stole AI's <span class="${stolenCard.class}">${stolenCard.name}</span> with Joker!`);
+                            document.getElementById("steal-sound").play();
+                        } else {
+                            addToLog("AI has no cards to steal!");
+                        }
+                    } else {
+                        if (human.hand.length > 0) {
+                            const stolenIndex = Math.floor(Math.random() * human.hand.length);
+                            const stolenCard = human.hand.splice(stolenIndex, 1)[0];
+                            ai.hand.push(stolenCard);
+                            addToLog(`AI stole your <span class="${stolenCard.class}">${stolenCard.name}</span> with Joker!`);
+                            document.getElementById("steal-sound").play();
+                        } else {
+                            addToLog("You have no cards to steal!");
+                        }
+                    }
+                    break;
+
+                case "steal_2_cards":
+                    if (!isAI) {
+                        const stolenCards = [];
+                        for (let i = 0; i < 2 && ai.hand.length > 0; i++) {
+                            const stolenIndex = Math.floor(Math.random() * ai.hand.length);
+                            const stolenCard = ai.hand.splice(stolenIndex, 1)[0];
+                            human.hand.push(stolenCard);
+                            stolenCards.push(stolenCard);
+                        }
+                        if (stolenCards.length > 0) {
+                            addToLog(`You stole ${stolenCards.length} card(s) with Black Joker: ` + stolenCards.map(c => `<span class="${c.class}">${c.name}</span>`).join(", "));
+                            document.getElementById("steal-sound").play();
+                        } else {
+                            addToLog("AI has no cards to steal!");
+                        }
+                    } else {
+                        const stolenCards = [];
+                        for (let i = 0; i < 2 && human.hand.length > 0; i++) {
+                            const stolenIndex = Math.floor(Math.random() * human.hand.length);
+                            const stolenCard = human.hand.splice(stolenIndex, 1)[0];
+                            ai.hand.push(stolenCard);
+                            stolenCards.push(stolenCard);
+                        }
+                        if (stolenCards.length > 0) {
+                            addToLog(`AI stole ${stolenCards.length} card(s) with Black Joker: ` + stolenCards.map(c => `<span class="${c.class}">${c.name}</span>`).join(", "));
+                            document.getElementById("steal-sound").play();
+                        } else {
+                            addToLog("You have no cards to steal!");
+                        }
+                    }
+                    break;
+
+                case "discard_opponent_card":
+                    if (!isAI) {
+                        if (ai.hand.length > 0) {
+                            const discardedIndex = Math.floor(Math.random() * ai.hand.length);
+                            const discardedCard = ai.hand.splice(discardedIndex, 1)[0];
+                            addToLog(`You discarded AI's <span class="${discardedCard.class}">${discardedCard.name}</span> with -1 (card)!`);
+                        } else {
+                            addToLog("AI has no cards to discard!");
+                        }
+                    } else {
+                        if (human.hand.length > 0) {
+                            const discardedIndex = Math.floor(Math.random() * human.hand.length);
+                            const discardedCard = human.hand.splice(discardedIndex, 1)[0];
+                            addToLog(`AI discarded your <span class="${discardedCard.class}">${discardedCard.name}</span> with -1 (card)!`);
+                        } else {
+                            addToLog("You have no cards to discard!");
+                        }
+                    }
+                    break;
+
+                case "swap_hands":
+                    addToLog("Hand Swap! You and AI exchange hands.");
+                    [human.hand, ai.hand] = [ai.hand, human.hand];
+                    break;
+
+                case "lose_1_chip":
+                    if (!isAI) {
+                        addToLog("-1 (chip)! AI loses 1 chip.");
+                        ai.chips -= 1;
+                    } else {
+                        addToLog("AI used -1 (chip)! You lose 1 chip.");
+                        human.chips -= 1;
+                    }
+                    break;
+
+                case "reflect_special":
+                    addToLog("Ricochet! Special effect reflected.");
+                    ricochetUsed = true;
+                    break;
+            }
+
+            // After resolving special effect, continue with normal combat resolution
+            processingEffect = false;
+            
+            // Determine who plays first next based on card strength comparison
+            if (ricochetUsed) {
+                // If ricochet was used, the effect was reflected so no turn change
+                humanTurn = !isAI;
+            } else {
+                // For other special cards, the winner is determined by card strength
+                if (card.strength > (opponentCard?.strength || 0)) {
+                    humanTurn = !isAI;
+                } else if (card.strength < (opponentCard?.strength || 0)) {
+                    humanTurn = isAI;
+                }
+                // If equal strength, turn order doesn't change
+            }
+
+            // Complete the combat resolution
+            resolveCombat(card);
+        }
+
+        // AI logic
+        function aiPlayCard() {
+            // If responding to human's card
+            if (currentRoundCards.human !== null) {
+                // Try to beat human's card
+                const possibleCards = ai.hand.filter(card => {
+                    // Check if this card is a Joker that beats the human's card
+                    const isJoker = card.beatsAllExcept && !card.beatsAllExcept.includes(currentRoundCards.human.name);
+                    return isJoker || (card.strength > currentRoundCards.human.strength);
+                });
+
+                if (possibleCards.length > 0) {
+                    // Play the lowest card that can beat human's card
+                    const card = possibleCards.reduce((a, b) =>
+                        (a.effect ? a.strength : a.strength) < (b.effect ? b.strength : b.strength) ? a : b
+                    );
+                    ai.hand.splice(ai.hand.indexOf(card), 1);
+                    return card;
+                }
+            }
+
+            // Default: play first available card
+            const card = ai.hand[0];
+            ai.hand.splice(0, 1); // Remove from hand immediately
+            return card;
+        }
+
+        // Block a card (cost: 2 chips)
+        function blockCard() {
+            if (!gameActive || processingEffect || human.blockUsed) {
+                addToLog("You can only block once per round!");
+                return;
+            }
+            if (human.chips < 2) {
+                addToLog("Not enough chips to block!");
+                return;
+            }
+            human.chips -= 2;
+            human.blockUsed = true;
+            addToLog("You spent 2 chips to block the AI's card!");
+            humanTurn = true; // Blocker goes first next round
+
+            // If blocking when AI played first, clear their card
+            if (currentRoundCards.ai !== null) {
+                currentRoundCards.ai = null;
+            }
+
+            updateButtons();
+            renderHands();
+        }
+
+        // Show Mystery Vault
+        function showVault() {
+            if (!gameActive || processingEffect || human.vaultUsed) {
+                addToLog("You can only use the Vault once per round!");
+                return;
+            }
+            if (human.hand.length < 2) {
+                addToLog("Not enough cards for the Vault!");
+                return;
+            }
+            vaultMode = true;
+            cardsToDiscard = [];
+            addToLog("Select 2 cards to discard for the Vault");
+            renderHands();
+        }
+
+        // Draw from Mystery Vault
+        function drawFromVault(index) {
+            // Discard selected cards
+            const discarded = cardsToDiscard
+                .sort((a, b) => b - a) // Sort descending to avoid index issues
+                .map(idx => human.hand.splice(idx, 1)[0]);
+
+            // Draw selected Vault card
+            const drawnCard = vaultCards.splice(index, 1)[0];
+            human.hand.push(drawnCard);
+            human.vaultUsed = true;
+            vaultMode = false;
+
+            addToLog(`Discarded 2 cards. Drew: <span class="${drawnCard.class}">${drawnCard.name}</span>`);
+            document.getElementById("vault-sound").play();
+            document.getElementById("vault").style.display = "none";
+            document.getElementById("confirm-discard-btn").style.display = "none";
+            renderHands();
+            updateButtons();
+        }
+
+        // Check if hands need refill
+        function checkHandRefill() {
+            if (human.hand.length === 0 || ai.hand.length === 0) {
+                addToLog("Hand refill! Drawing 7 new cards for each player.");
+                refillHand(human);
+                refillHand(ai);
+                // Reset block and vault usage on hand refill
+                human.blockUsed = false;
+                human.vaultUsed = false;
+                ai.blockUsed = false;
+                ai.vaultUsed = false;
+            }
+        }
+
+        // Refill hand with 7 new cards
+        function refillHand(player) {
+            let deck = [];
+            // Rebuild deck (51 cards)
+            for (let rank of ranks) {
+                let cardClass = "weak";
+                if (["7", "8", "9", "10"].includes(rank)) cardClass = "mid";
+                if (["Mafioso", "Queen", "King", "Ace"].includes(rank)) cardClass = "strong";
+                deck.push({
+                    name: rank,
+                    class: cardClass,
+                    strength: ranks.indexOf(rank) + 2,
+                    fromVault: false
+                });
+            }
+            for (let card in specials) {
+                deck.push({
+                    name: card,
+                    class: specials[card].class,
+                    effect: specials[card].effect,
+                    strength: specials[card].strength,
+                    beatsAllExcept: specials[card].beatsAllExcept,
+                    fromVault: false
+                });
+            }
+
+            deck = shuffle(deck);
+            if (player === human) {
+                human.hand = deck.slice(0, 7);
+            } else {
+                ai.hand = deck.slice(0, 7);
+            }
+
+            renderHands();
+        }
+
+        // Update UI buttons
+        function updateButtons() {
+            if (!gameActive) {
+                document.getElementById("play-btn").disabled = true;
+                document.getElementById("block-btn").disabled = true;
+                document.getElementById("vault-btn").disabled = true;
+                return;
+            }
+
+            document.getElementById("human-chips").textContent = human.chips;
+            document.getElementById("ai-chips").textContent = ai.chips;
+
+            const canBlock = human.chips >= 2 && !human.blockUsed && !stealMode && !discardMode && !vaultMode && !processingEffect;
+            document.getElementById("block-btn").disabled = !canBlock;
+
+            const canVault = human.hand.length >= 2 && !human.vaultUsed && !stealMode && !discardMode && !vaultMode && !processingEffect;
+            document.getElementById("vault-btn").disabled = !canVault;
+
+            const canPlay = selectedCard !== null && selectedCard < human.hand.length && !stealMode && !discardMode && !vaultMode &&
+                (humanTurn || currentRoundCards.ai !== null) && !processingEffect;
+            document.getElementById("play-btn").disabled = !canPlay;
+        }
+
+        // Add message to log
+        function addToLog(message) {
+            const log = document.getElementById("log");
+            log.innerHTML += message + "<br>";
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // Check win/lose
+        function checkGameOver() {
+            if (human.chips <= 0) {
+                addToLog("💀 YOU LOSE! AI wins.");
+                document.getElementById("lose-sound").play();
+                endGame();
+            } else if (ai.chips <= 0) {
+                addToLog("🎉 YOU WIN! POT STEAL CHAMPION!");
+                document.getElementById("champion-sound").play();
+                document.getElementById("title").classList.add("celebrate");
+                endGame();
+            }
+        }
+
+        function endGame() {
+            gameActive = false;
+            document.getElementById("play-btn").disabled = true;
+            document.getElementById("block-btn").disabled = true;
+            document.getElementById("vault-btn").disabled = true;
+        }
+
+        // Start game
+        window.onload = function() {
+            init();
+            document.getElementById("new-game-btn").addEventListener("click", init);
+
+            // Add button event listeners
+            document.getElementById("play-btn").addEventListener("click", playTurn);
+            document.getElementById("block-btn").addEventListener("click", blockCard);
+            document.getElementById("vault-btn").addEventListener("click", showVault);
+            document.getElementById("confirm-discard-btn").addEventListener("click", confirmDiscard);
+        };
+    </script>
+</body>
+</html>
